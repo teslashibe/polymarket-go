@@ -140,16 +140,36 @@ func truncate(s string, max int) string {
 	return s[:max] + "…"
 }
 
-// Health is a liveness probe hitting both API origins' root paths.
-// Returns nil when both reply 2xx. Intended for bot startup; production
-// consumers should surface errors to their existing healthcheck.
+// Health is a liveness probe hitting both API origins. Returns nil when
+// both Gamma and CLOB respond, even if the response is non-JSON (we only
+// care that the host is reachable). Network or DNS errors propagate so
+// bot startup can fail fast on a misconfigured environment.
 func (c *Client) Health(ctx context.Context) error {
-	if err := c.getJSON(ctx, c.clobBase, "/", nil, nil); err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusOK {
-			return nil
-		}
-		// Some CLOB deployments don't answer the bare / with JSON; accept any 2xx.
+	if err := c.head(ctx, c.gammaBase+"/markets?limit=1"); err != nil {
+		return fmt.Errorf("gamma: %w", err)
+	}
+	if err := c.head(ctx, c.clobBase+"/"); err != nil {
+		return fmt.Errorf("clob: %w", err)
+	}
+	return nil
+}
+
+// head issues a HEAD (falling back to GET) and discards the body. Used
+// only by [Client.Health].
+func (c *Client) head(ctx context.Context, u string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", c.ua)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("upstream %d", resp.StatusCode)
 	}
 	return nil
 }
