@@ -107,3 +107,42 @@ func TestOrderbookDerivations(t *testing.T) {
 		t.Fatalf("one-sided derivations should return 0")
 	}
 }
+
+// TestOrderbookDerivations_UnsortedBook is the regression test for a
+// real production bug: Polymarket's /book endpoint returns asks
+// sorted DESCENDING by price (worst-first) and bids sorted ASCENDING
+// (worst-first). Trusting Bids[0]/Asks[0] yields the *worst* prices,
+// causing every paper-mode match attempt to fail.
+//
+// BestBid()/BestAsk() must scan the full level list, not trust
+// position, so they return the right answer regardless of the
+// upstream's ordering choice.
+func TestOrderbookDerivations_UnsortedBook(t *testing.T) {
+	// Mimics the actual /book payload shape: asks listed worst-first
+	// (high → low), bids listed worst-first (low → high).
+	worstFirst := OrderbookSummary{
+		Asks: []OrderbookLevel{
+			{Price: 0.999, Size: 4576},
+			{Price: 0.998, Size: 5},
+			{Price: 0.30, Size: 100},
+			{Price: 0.226, Size: 187}, // actual best ask
+			{Price: 0.227, Size: 32},
+		},
+		Bids: []OrderbookLevel{
+			{Price: 0.001, Size: 4580},
+			{Price: 0.005, Size: 14249},
+			{Price: 0.105, Size: 78},
+			{Price: 0.205, Size: 59}, // actual best bid
+			{Price: 0.204, Size: 5},
+		},
+	}
+	if got := worstFirst.BestAsk(); got != 0.226 {
+		t.Fatalf("BestAsk on worst-first asks: got %v, want 0.226", got)
+	}
+	if got := worstFirst.BestBid(); got != 0.205 {
+		t.Fatalf("BestBid on worst-first bids: got %v, want 0.205", got)
+	}
+	if got := worstFirst.Midpoint(); got < 0.215 || got > 0.216 {
+		t.Fatalf("Midpoint on worst-first book: got %v, want ~0.2155", got)
+	}
+}

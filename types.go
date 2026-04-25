@@ -178,19 +178,37 @@ type OrderbookSummary struct {
 }
 
 // BestBid returns the highest bid price, or 0 if there are none.
+//
+// The Polymarket CLOB /book endpoint does NOT guarantee a sort order
+// for the bids array — in practice it returns bids ascending so
+// Bids[0] is the *worst* bid, not the best. We scan all levels
+// instead of trusting position so this works regardless of the
+// upstream's ordering choice.
 func (o OrderbookSummary) BestBid() float64 {
-	if len(o.Bids) == 0 {
-		return 0
+	best := 0.0
+	for _, b := range o.Bids {
+		p := b.Price.Float()
+		if p > best {
+			best = p
+		}
 	}
-	return o.Bids[0].Price.Float()
+	return best
 }
 
 // BestAsk returns the lowest ask price, or 0 if there are none.
+//
+// Same caveat as BestBid: Polymarket returns asks descending in
+// practice (Asks[0] is the worst/highest ask). Scanning the whole
+// slice insulates us from any future reorder of the upstream payload.
 func (o OrderbookSummary) BestAsk() float64 {
-	if len(o.Asks) == 0 {
-		return 0
+	best := 0.0
+	for _, a := range o.Asks {
+		p := a.Price.Float()
+		if p > 0 && (best == 0 || p < best) {
+			best = p
+		}
 	}
-	return o.Asks[0].Price.Float()
+	return best
 }
 
 // Midpoint is the average of the best bid and ask. Returns 0 when the
