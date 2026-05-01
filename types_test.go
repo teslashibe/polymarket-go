@@ -38,6 +38,38 @@ func TestMarketUnmarshal_LegacyStringArrays(t *testing.T) {
 	}
 }
 
+// TestMarketUnmarshal_EventStartTime locks the decode of the
+// resolution-window start moment Polymarket exposes for recurring
+// "Up or Down" / touch markets. This is distinct from StartDate
+// (the listing time on the platform) and is the only field that
+// can be safely used as the price-reference anchor for outcome
+// scoring — see consumer code in cryptobot/universe and
+// cryptobot/outcomes for why anchoring on StartDate silently
+// inverts scored outcomes for these markets.
+func TestMarketUnmarshal_EventStartTime(t *testing.T) {
+	raw := []byte(`{
+		"id": "42",
+		"question": "Dogecoin Up or Down - May 1, 4:30PM-4:35PM ET",
+		"slug": "doge-updown-5m-1777667400",
+		"startDate": "2026-04-30T20:38:32.092814Z",
+		"eventStartTime": "2026-05-01T20:30:00Z",
+		"endDate": "2026-05-01T20:35:00Z"
+	}`)
+	var m Market
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if m.EventStartTime.IsZero() {
+		t.Fatal("EventStartTime did not decode")
+	}
+	if got := m.EventStartTime.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-05-01T20:30:00Z" {
+		t.Errorf("EventStartTime=%s want 2026-05-01T20:30:00Z", got)
+	}
+	if m.StartDate.Equal(m.EventStartTime) {
+		t.Error("StartDate must remain distinct from EventStartTime — they have different semantics")
+	}
+}
+
 // TestMarketUnmarshal_NativeArrays ensures we still accept the newer
 // shape where outcomes/prices arrive as real JSON arrays.
 func TestMarketUnmarshal_NativeArrays(t *testing.T) {
