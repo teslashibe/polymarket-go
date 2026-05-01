@@ -39,6 +39,19 @@ type Market struct {
 	LiquidityNum          flexFloat `json:"liquidityNum,omitempty"`
 	StartDate             time.Time `json:"startDate,omitempty"`
 	EndDate               time.Time `json:"endDate,omitempty"`
+	// EventStartTime is the *resolution-window* start moment for
+	// markets whose outcome depends on a price-vs-reference comparison
+	// (Polymarket's recurring "Up or Down" / "touch" markets). For a
+	// "DOGE Up or Down — May 1, 4:30PM-4:35PM ET" market this returns
+	// 2026-05-01T20:30:00Z, which is the price Polymarket compares the
+	// settle price against. Distinct from StartDate, which is the
+	// market's *listing* time on the platform (often a day before the
+	// resolution window opens for these recurring markets).
+	//
+	// Zero for markets that don't carry the field (most non-recurring
+	// shapes — above_below, price_range, etc., which resolve from a
+	// settle price alone and don't need a reference).
+	EventStartTime        time.Time `json:"eventStartTime,omitempty"`
 	CreatedAt             time.Time `json:"createdAt,omitempty"`
 	UpdatedAt             time.Time `json:"updatedAt,omitempty"`
 	ResolvedBy            string    `json:"resolvedBy,omitempty"`
