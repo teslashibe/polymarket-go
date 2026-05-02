@@ -87,6 +87,26 @@ func (c *Client) ListMarkets(ctx context.Context, opts ListMarketsOpts) ([]Marke
 	return out, nil
 }
 
+func (c *Client) ListAllMarkets(ctx context.Context, opts ListMarketsOpts) ([]Market, error) {
+	pageSize := opts.Limit
+	if pageSize <= 0 {
+		pageSize = 500
+	}
+	var all []Market
+	for offset := 0; ; offset += pageSize {
+		opts.Limit = pageSize
+		opts.Offset = offset
+		page, err := c.ListMarkets(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < pageSize {
+			return all, nil
+		}
+	}
+}
+
 // GetMarket returns a single market by numeric id.
 func (c *Client) GetMarket(ctx context.Context, id string) (*Market, error) {
 	var out Market

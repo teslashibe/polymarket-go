@@ -13,6 +13,7 @@ var Excluded = map[string]string{
 	// events.
 	"GetMarketBySlug": "covered by polymarket_get_market (dispatches on id or slug)",
 	"GetEventBySlug":  "covered by polymarket_get_event (dispatches on id or slug)",
+	"ListAllMarkets":  "helper for callers that page through polymarket_list_markets",
 
 	// Liveness probe — host's /mcp/v1/health route handles readiness.
 	"Health": "liveness probe owned by the host application",
