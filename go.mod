@@ -2,7 +2,10 @@ module github.com/teslashibe/polymarket-go
 
 go 1.25.5
 
-require github.com/teslashibe/mcptool v0.1.1
+require (
+	github.com/gorilla/websocket v1.5.3
+	github.com/teslashibe/mcptool v0.1.1
+)
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
