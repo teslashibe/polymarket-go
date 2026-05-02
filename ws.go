@@ -21,6 +21,7 @@ type MarketStreamOptions struct {
 	UserAgent      string
 	ReconnectDelay time.Duration
 	ReadTimeout    time.Duration
+	PingInterval   time.Duration
 	OnStatus       func(StreamStatus)
 }
 
@@ -59,6 +60,9 @@ func NewMarketStreamer(opts MarketStreamOptions) *MarketStreamer {
 	if opts.ReadTimeout == 0 {
 		opts.ReadTimeout = 60 * time.Second
 	}
+	if opts.PingInterval == 0 {
+		opts.PingInterval = 10 * time.Second
+	}
 	return &MarketStreamer{opts: opts}
 }
 
@@ -81,17 +85,27 @@ func (s *MarketStreamer) read(ctx context.Context, onEvent func(context.Context,
 	}
 	defer conn.Close()
 
-	if err := conn.WriteJSON(map[string]any{"type": "market", "assets_ids": s.opts.AssetIDs}); err != nil {
+	if err := conn.WriteJSON(map[string]any{"type": "market", "assets_ids": s.opts.AssetIDs, "custom_feature_enabled": true}); err != nil {
 		return err
 	}
 	s.status("connected", nil)
 	slog.Info("polymarket market ws subscribed", "assets", len(s.opts.AssetIDs), "url", s.opts.URL)
 
+	pingErr := s.startPing(ctx, conn)
 	for ctx.Err() == nil {
+		select {
+		case err := <-pingErr:
+			return err
+		default:
+		}
 		_ = conn.SetReadDeadline(time.Now().Add(s.opts.ReadTimeout))
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
 			return err
+		}
+		if string(msg) == "PONG" {
+			slog.Debug("polymarket market ws pong")
+			continue
 		}
 		for _, raw := range splitRawMessages(msg) {
 			e := ParseWSEvent(raw)
@@ -102,6 +116,32 @@ func (s *MarketStreamer) read(ctx context.Context, onEvent func(context.Context,
 		}
 	}
 	return ctx.Err()
+}
+
+func (s *MarketStreamer) startPing(ctx context.Context, conn *websocket.Conn) <-chan error {
+	errCh := make(chan error, 1)
+	ticker := time.NewTicker(s.opts.PingInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if err := conn.WriteMessage(websocket.TextMessage, []byte("PING")); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					_ = conn.Close()
+					return
+				}
+				slog.Debug("polymarket market ws ping")
+			}
+		}
+	}()
+	return errCh
 }
 
 func (s *MarketStreamer) status(state string, err error) {
