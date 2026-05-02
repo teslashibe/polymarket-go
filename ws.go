@@ -16,13 +16,15 @@ import (
 const DefaultMarketWSURL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 type MarketStreamOptions struct {
-	URL            string
-	AssetIDs       []string
-	UserAgent      string
-	ReconnectDelay time.Duration
-	ReadTimeout    time.Duration
-	PingInterval   time.Duration
-	OnStatus       func(StreamStatus)
+	URL                      string
+	AssetIDs                 []string
+	UserAgent                string
+	ReconnectDelay           time.Duration
+	ReadTimeout              time.Duration
+	PingInterval             time.Duration
+	AutoSubscribeNewMarkets  bool
+	ShouldSubscribeNewMarket func(WSEvent) bool
+	OnStatus                 func(StreamStatus)
 }
 
 type MarketStreamer struct {
@@ -38,9 +40,17 @@ type StreamStatus struct {
 type WSEvent struct {
 	EventType string           `json:"event_type"`
 	AssetID   string           `json:"asset_id"`
+	AssetIDs  []string         `json:"asset_ids,omitempty"`
 	Market    string           `json:"market,omitempty"`
+	Question  string           `json:"question,omitempty"`
+	Slug      string           `json:"slug,omitempty"`
+	Outcomes  []string         `json:"outcomes,omitempty"`
+	Active    bool             `json:"active,omitempty"`
 	Side      string           `json:"side,omitempty"`
 	Price     float64          `json:"price,omitempty"`
+	BestBid   float64          `json:"best_bid,omitempty"`
+	BestAsk   float64          `json:"best_ask,omitempty"`
+	Spread    float64          `json:"spread,omitempty"`
 	Bids      []OrderbookLevel `json:"bids,omitempty"`
 	Asks      []OrderbookLevel `json:"asks,omitempty"`
 	SourceTS  *time.Time       `json:"source_ts,omitempty"`
@@ -108,10 +118,16 @@ func (s *MarketStreamer) read(ctx context.Context, onEvent func(context.Context,
 			continue
 		}
 		for _, raw := range splitRawMessages(msg) {
-			e := ParseWSEvent(raw)
-			if e.AssetID != "" {
+			for _, e := range ParseWSEvents(raw) {
 				slog.Debug("polymarket market ws event", "asset_id", e.AssetID, "event_type", e.EventType, "price", e.Price, "raw_bytes", len(e.Raw))
 				onEvent(ctx, e)
+				shouldSubscribe := s.opts.ShouldSubscribeNewMarket == nil || s.opts.ShouldSubscribeNewMarket(e)
+				if s.opts.AutoSubscribeNewMarkets && shouldSubscribe && e.EventType == "new_market" && len(e.AssetIDs) > 0 {
+					if err := conn.WriteJSON(map[string]any{"operation": "subscribe", "assets_ids": e.AssetIDs, "custom_feature_enabled": true}); err != nil {
+						return err
+					}
+					slog.Info("polymarket market ws auto-subscribed", "assets", len(e.AssetIDs), "slug", e.Slug)
+				}
 			}
 		}
 	}
@@ -150,23 +166,80 @@ func (s *MarketStreamer) status(state string, err error) {
 	}
 }
 
-func ParseWSEvent(raw []byte) WSEvent {
+func ParseWSEvents(raw []byte) []WSEvent {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return WSEvent{}
+		return nil
 	}
+	if firstString(m, "event_type", "type") == "price_change" {
+		return parsePriceChanges(raw, m)
+	}
+	return []WSEvent{ParseWSEvent(raw)}
+}
+
+func ParseWSEvent(raw []byte) WSEvent {
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
 	e := WSEvent{
 		EventType: firstString(m, "event_type", "type"),
 		AssetID:   firstString(m, "asset_id", "assetId", "token_id", "tokenId"),
+		AssetIDs:  firstStringSlice(m, "assets_ids", "asset_ids", "clob_token_ids", "clobTokenIds"),
 		Market:    firstString(m, "market", "market_id", "condition_id"),
+		Question:  firstString(m, "question"),
+		Slug:      firstString(m, "slug"),
+		Outcomes:  firstStringSlice(m, "outcomes"),
+		Active:    firstBool(m, "active"),
 		Side:      firstString(m, "side"),
 		Price:     eventPrice(m),
+		BestBid:   firstFloat(m, "best_bid"),
+		BestAsk:   firstFloat(m, "best_ask"),
+		Spread:    firstFloat(m, "spread"),
 		SourceTS:  eventTime(m),
 		Raw:       append([]byte(nil), raw...),
 	}
 	e.Bids = levels(m["bids"])
 	e.Asks = levels(m["asks"])
+	if e.BestBid == 0 {
+		e.BestBid = bookEdge(m["bids"], true)
+	}
+	if e.BestAsk == 0 {
+		e.BestAsk = bookEdge(m["asks"], false)
+	}
+	if e.Spread == 0 && e.BestBid > 0 && e.BestAsk > 0 {
+		e.Spread = e.BestAsk - e.BestBid
+	}
 	return e
+}
+
+func parsePriceChanges(raw []byte, m map[string]any) []WSEvent {
+	changes, ok := m["price_changes"].([]any)
+	if !ok {
+		return []WSEvent{ParseWSEvent(raw)}
+	}
+	out := make([]WSEvent, 0, len(changes))
+	market := firstString(m, "market", "market_id", "condition_id")
+	ts := eventTime(m)
+	for _, item := range changes {
+		change, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, WSEvent{
+			EventType: "price_change",
+			AssetID:   firstString(change, "asset_id", "assetId", "token_id", "tokenId"),
+			Market:    market,
+			Side:      firstString(change, "side"),
+			Price:     eventPrice(change),
+			BestBid:   firstFloat(change, "best_bid"),
+			BestAsk:   firstFloat(change, "best_ask"),
+			SourceTS:  ts,
+			Raw:       append([]byte(nil), raw...),
+		})
+		if out[len(out)-1].BestBid > 0 && out[len(out)-1].BestAsk > 0 {
+			out[len(out)-1].Spread = out[len(out)-1].BestAsk - out[len(out)-1].BestBid
+		}
+	}
+	return out
 }
 
 func splitRawMessages(msg []byte) []json.RawMessage {
@@ -257,6 +330,38 @@ func firstString(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstStringSlice(m map[string]any, keys ...string) []string {
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case []any:
+			out := make([]string, 0, len(v))
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					out = append(out, s)
+				}
+			}
+			return out
+		case []string:
+			return v
+		case string:
+			var out []string
+			if json.Unmarshal([]byte(v), &out) == nil {
+				return out
+			}
+		}
+	}
+	return nil
+}
+
+func firstBool(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if v, ok := m[k].(bool); ok {
+			return v
+		}
+	}
+	return false
 }
 
 func firstFloat(m map[string]any, keys ...string) float64 {
