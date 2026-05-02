@@ -21,10 +21,17 @@ type MarketStreamOptions struct {
 	UserAgent      string
 	ReconnectDelay time.Duration
 	ReadTimeout    time.Duration
+	OnStatus       func(StreamStatus)
 }
 
 type MarketStreamer struct {
 	opts MarketStreamOptions
+}
+
+type StreamStatus struct {
+	State string
+	Err   error
+	At    time.Time
 }
 
 type WSEvent struct {
@@ -58,6 +65,7 @@ func NewMarketStreamer(opts MarketStreamOptions) *MarketStreamer {
 func (s *MarketStreamer) Run(ctx context.Context, onEvent func(context.Context, WSEvent)) error {
 	for ctx.Err() == nil {
 		if err := s.read(ctx, onEvent); err != nil && ctx.Err() == nil {
+			s.status("disconnected", err)
 			slog.Warn("polymarket market ws reconnecting", "error", err)
 			sleep(ctx, s.opts.ReconnectDelay)
 		}
@@ -76,6 +84,7 @@ func (s *MarketStreamer) read(ctx context.Context, onEvent func(context.Context,
 	if err := conn.WriteJSON(map[string]any{"type": "market", "assets_ids": s.opts.AssetIDs}); err != nil {
 		return err
 	}
+	s.status("connected", nil)
 	slog.Info("polymarket market ws subscribed", "assets", len(s.opts.AssetIDs), "url", s.opts.URL)
 
 	for ctx.Err() == nil {
@@ -93,6 +102,12 @@ func (s *MarketStreamer) read(ctx context.Context, onEvent func(context.Context,
 		}
 	}
 	return ctx.Err()
+}
+
+func (s *MarketStreamer) status(state string, err error) {
+	if s.opts.OnStatus != nil {
+		s.opts.OnStatus(StreamStatus{State: state, Err: err, At: time.Now().UTC()})
+	}
 }
 
 func ParseWSEvent(raw []byte) WSEvent {
